@@ -25,21 +25,13 @@ jobs:
 
       - name: Build Capture Agent
         run: |
-          pyinstaller ^
-            --onefile ^
-            --noconsole ^
-            --name capture-agent ^
-            stalker.py
+          pyinstaller --onefile --noconsole --name capture-agent stalker.py
         env:
           REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
 
       - name: Build Telegram Agent
         run: |
-          pyinstaller ^
-            --onefile ^
-            --noconsole ^
-            --name telegram-agent ^
-            tBotAgent.py
+          pyinstaller --onefile --noconsole --name telegram-agent tBotAgent.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
