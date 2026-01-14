@@ -29,7 +29,7 @@ jobs:
             --onefile ^
             --noconsole ^
             --name capture-agent ^
-            capture_agent.py
+            stalker.py
         env:
           REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
 
@@ -39,7 +39,7 @@ jobs:
             --onefile ^
             --noconsole ^
             --name telegram-agent ^
-            telegram_bot_agent.py
+            tBotAgent.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}

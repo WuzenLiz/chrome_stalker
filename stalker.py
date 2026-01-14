@@ -249,6 +249,8 @@ class Orchestrator:
                 return
             self._last_capture = now
 
+        # Allow the target window (e.g., after Enter key press) a brief moment
+        # to update/render its contents before taking the screenshot.
         time.sleep(0.3)
 
         try:
