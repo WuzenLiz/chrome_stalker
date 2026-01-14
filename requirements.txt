@@ -1,0 +1,13 @@
+# ===== Core =====
+psutil>=5.9.0
+pillow>=10.0.0
+redis>=5.0.0
+requests>=2.31.0
+
+# ===== Windows / Capture =====
+pywin32>=306
+mss>=9.0.1
+pynput>=1.7.6
+
+# ===== Build (CI only, optional at runtime) =====
+pyinstaller>=6.3.0

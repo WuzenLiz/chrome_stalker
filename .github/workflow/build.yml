@@ -1,0 +1,52 @@
+name: Build Windows Agents
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Capture Agent
+        run: |
+          pyinstaller ^
+            --onefile ^
+            --noconsole ^
+            --name capture-agent ^
+            capture_agent.py
+        env:
+          REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
+
+      - name: Build Telegram Agent
+        run: |
+          pyinstaller ^
+            --onefile ^
+            --noconsole ^
+            --name telegram-agent ^
+            telegram_bot_agent.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agents
+          path: dist/*.exe
