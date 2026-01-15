@@ -1,6 +1,6 @@
 # Chrome Stalker
-
-A tool for monitoring and tracking Chrome browser activity.
+[![Build Windows Agents](https://github.com/WuzenLiz/chrome_stalker/actions/workflows/build.yml/badge.svg?branch=main&event=release)](https://github.com/WuzenLiz/chrome_stalker/actions/workflows/build.yml)
+A Windows-only foreground capture agent triggered by user input events, designed as a technical proof-of-concept for Win32 automation, event orchestration, and inter-process integrations.
 
 ## Features
 
