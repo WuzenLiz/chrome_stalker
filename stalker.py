@@ -17,7 +17,17 @@ from PIL import Image
 from pynput import keyboard
 import winreg
 import redis
+import dotenv
+import sys
+from pathlib import Path
 
+
+if getattr(sys, 'frozen', False):
+    base_path = Path(sys.executable).parent
+else:
+    base_path = Path(__file__).parent
+
+dotenv.load_dotenv(base_path / ".env")
 # ============================================================
 # SYSTEM HARDENING
 # ============================================================
@@ -162,6 +172,7 @@ class RedisPublisher:
             try:
                 if not self._client:
                     self._connect()
+                    log.info("Connected to Redis")
                 self._client.publish(channel, json.dumps(payload))
             except Exception as e:
                 log.error("Redis publish failed: %s", e)

@@ -4,7 +4,17 @@ import logging
 import redis
 import requests
 import time
+import dotenv
+import sys
+from pathlib import Path
 
+
+if getattr(sys, 'frozen', False):
+    base_path = Path(sys.executable).parent
+else:
+    base_path = Path(__file__).parent
+
+dotenv.load_dotenv(base_path / ".env")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
