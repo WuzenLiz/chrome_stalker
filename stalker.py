@@ -6,7 +6,7 @@ import os
 import re
 import ctypes
 from queue import Queue, Empty
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import psutil
 import win32gui
@@ -116,7 +116,7 @@ config_mgr = ConfigManager()
 class Event:
     name: str
     data: dict
-    ts: float = time.time()
+    ts: float = field(default_factory=time.time)
 
 # ============================================================
 # WINDOW HELPERS
@@ -130,6 +130,7 @@ class RECT(ctypes.Structure):
         ("bottom", ctypes.c_long),
     ]
 
+_regex_cache = {}
 
 def get_foreground_chrome_hwnd(title_regex: str):
     hwnd = win32gui.GetForegroundWindow()
@@ -137,15 +138,21 @@ def get_foreground_chrome_hwnd(title_regex: str):
         return None
 
     try:
-        _, pid = win32process.GetWindowThreadProcessId(hwnd)
-        proc = psutil.Process(pid)
-        if proc.name().lower() != TARGET_PROCESS:
+        if win32gui.GetClassName(hwnd) != "Chrome_WidgetWin_1":
             return None
     except Exception:
         return None
 
-    title = win32gui.GetWindowText(hwnd)
-    if not title or not re.search(title_regex, title, re.I):
+
+    title = win32gui.GetWindowText(hwnd).strip()
+    if not title:
+        return None
+
+    pat = _regex_cache.get(title_regex)
+    if not pat:
+        pat = re.compile(title_regex, re.I)
+        _regex_cache[title_regex] = pat
+    if not pat.search(title):
         return None
 
     return hwnd
@@ -225,10 +232,13 @@ class CaptureEngine:
         image.save(path)
 
         redis_pub.publish("IMAGE_READY", {
+            "type": "IMAGE_READY",
+            "v": 1,
             "hwnd": hwnd,
             "path": path,
             "timestamp": ts
         })
+
 
         return path
 
@@ -275,12 +285,22 @@ class Orchestrator:
 # ============================================================
 
 def keyboard_thread(queue: Queue, stop_evt: threading.Event):
+    cfg = config_mgr.get()
+    last_cfg_check = 0
+
     def on_press(key):
-        if key == keyboard.Key.enter:
+        nonlocal cfg, last_cfg_check
+        if key != keyboard.Key.enter:
+            return
+
+        now = time.time()
+        if now - last_cfg_check > 1.0:
             cfg = config_mgr.get()
-            hwnd = get_foreground_chrome_hwnd(cfg.title_regex)
-            if hwnd:
-                queue.put(Event("KEY_ENTER", {"hwnd": hwnd}))
+            last_cfg_check = now
+
+        hwnd = get_foreground_chrome_hwnd(cfg.title_regex)
+        if hwnd:
+            queue.put(Event("KEY_ENTER", {"hwnd": hwnd}))
 
     with keyboard.Listener(on_press=on_press) as listener:
         while not stop_evt.is_set():
@@ -318,6 +338,7 @@ def main():
         pass
     finally:
         stop_evt.set()
+        t.join(timeout=2)
         log.info("Capture Agent stopped")
 
 
