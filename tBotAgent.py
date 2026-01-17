@@ -212,11 +212,6 @@ def redis_worker(stop_evt, config_mgr: ConfigManager):
         for msg in pubsub.listen():
             if stop_evt.is_set():
                 break
-            if msg["type"] != "IMAGE_READY":
-                continue
-            if msg["channel"] != "IMAGE_READY":
-                continue
-            
 
             try:
                 data = json.loads(msg["data"])
