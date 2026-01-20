@@ -206,7 +206,7 @@ async def ping_agent(update, context):
             f"🟢 Agent alive\n"
             f"• PID: {r['pid']}\n"
             f"• Uptime: {r['uptime_sec']}s\n"
-            f"• Redis: {r['redis']['connected']}"
+            f"• Redis: {r['redis_connected']}"
         )
     except Exception:
         await update.message.reply_text("🔴 Agent offline")
