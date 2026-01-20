@@ -127,7 +127,7 @@ async def cleanup_old_photos(
 
     output_dir = os.path.join(
         os.getenv("APPDATA", ""),
-        "tBotAgent",
+        "Agent",
         "captures"
     )
 
