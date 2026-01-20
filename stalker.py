@@ -1,16 +1,15 @@
 import time
 import json
-import logging
 import threading
 import os
 import re
 import ctypes
 from queue import Queue, Empty
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import psutil
 import win32gui
-import win32process
 import mss
 import mss.windows
 from PIL import Image
@@ -19,8 +18,13 @@ import winreg
 import redis
 import dotenv
 import sys
-from pathlib import Path
 
+from flask import Flask
+from logger import setup_logger
+
+# ============================================================
+# BOOTSTRAP
+# ============================================================
 
 if getattr(sys, 'frozen', False):
     base_path = Path(sys.executable).parent
@@ -28,6 +32,7 @@ else:
     base_path = Path(__file__).parent
 
 dotenv.load_dotenv(base_path / ".env")
+
 # ============================================================
 # SYSTEM HARDENING
 # ============================================================
@@ -42,27 +47,30 @@ if hasattr(ctypes.windll.user32, "SetProcessDpiAwarenessContext"):
     )
 
 mss.windows.CAPTUREBLT = True
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-log = logging.getLogger("capture-agent")
-
 # ============================================================
 # CONSTANTS
 # ============================================================
-
-TARGET_PROCESS = "chrome.exe"
-OUTPUT_DIR = os.path.join(os.getenv("APPDATA"), "tBotAgent", "captures")
+OUTPUT_DIR = os.path.join(os.getenv("APPDATA"), "Agent")
 REDIS_URL = os.getenv("REDIS_CONNECTION", "redis://localhost:6379/0")
 REG_PATH = r"Software\tBotAgent\v1"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ============================================================
+# LOGGING
+# ============================================================
+log = setup_logger(
+    "agent",
+    os.path.join(OUTPUT_DIR, "logs", "agent.log")
+)
+
+
+# ============================================================
+# RUNTIME FLAGS
+# ============================================================
+
+reload_evt = threading.Event()
+stop_evt = threading.Event()
 
 # ============================================================
 # REGISTRY CONFIG
@@ -74,6 +82,8 @@ class RegistryConfig:
     interval_sec: int = 5
     title_regex: str = r"(facebook|messenger|zalo)"
     fg_poll_interval: float = 0.5
+    max_pubsub_false_countdown: int = 5
+    max_files_rotation: int = 500
 
 
 class ConfigManager:
@@ -98,6 +108,12 @@ class ConfigManager:
                     interval_sec=int(winreg.QueryValueEx(key, "interval_sec")[0]),
                     title_regex=str(winreg.QueryValueEx(key, "title_regex")[0]),
                     fg_poll_interval=float(winreg.QueryValueEx(key, "fg_poll_interval")[0]),
+                    max_pubsub_false_countdown=int(
+                        winreg.QueryValueEx(key, "max_pubsub_false_countdown")[0]
+                    ),
+                    max_files_rotation=int(
+                        winreg.QueryValueEx(key, "max_files_rotation")[0]
+                    ),
                 )
         except FileNotFoundError:
             return RegistryConfig()
@@ -130,6 +146,7 @@ class RECT(ctypes.Structure):
         ("bottom", ctypes.c_long),
     ]
 
+
 _regex_cache = {}
 
 def get_foreground_chrome_hwnd(title_regex: str):
@@ -143,7 +160,6 @@ def get_foreground_chrome_hwnd(title_regex: str):
     except Exception:
         return None
 
-
     title = win32gui.GetWindowText(hwnd).strip()
     if not title:
         return None
@@ -152,20 +168,20 @@ def get_foreground_chrome_hwnd(title_regex: str):
     if not pat:
         pat = re.compile(title_regex, re.I)
         _regex_cache[title_regex] = pat
-    if not pat.search(title):
-        return None
 
-    return hwnd
+    return hwnd if pat.search(title) else None
 
 # ============================================================
-# REDIS PUBLISHER (SINGLETON)
+# REDIS PUBLISHER
 # ============================================================
 
 class RedisPublisher:
-    def __init__(self, url: str):
-        self._lock = threading.Lock()
+    def __init__(self, url: str, config: RegistryConfig):
         self._url = url
+        self._config = config
         self._client = None
+        self._lock = threading.Lock()
+        self._last_failed = 0.0
 
     def _connect(self):
         self._client = redis.Redis.from_url(
@@ -176,23 +192,40 @@ class RedisPublisher:
 
     def publish(self, channel: str, payload: dict):
         with self._lock:
+            if time.time() - self._last_failed < self._config.max_pubsub_false_countdown:
+                return
             try:
                 if not self._client:
                     self._connect()
-                    log.info("Connected to Redis")
+                    log.info("Redis connected")
                 self._client.publish(channel, json.dumps(payload))
             except Exception as e:
                 log.error("Redis publish failed: %s", e)
                 self._client = None
+                self._last_failed = time.time()
 
+    def is_connected(self) -> bool:
+        with self._lock:
+            try:
+                return bool(self._client and self._client.ping())
+            except Exception:
+                self._client = None
+                return False
 
-redis_pub = RedisPublisher(REDIS_URL)
+    def total_subscribers(self, channel: str) -> int:
+        with self._lock:
+            try:
+                return self._client.pubsub_numsub(channel)[0][1] if self._client else 0
+            except Exception:
+                self._client = None
+                return 0
 
 # ============================================================
 # CAPTURE ENGINE
 # ============================================================
 
 class CaptureEngine:
+    os.makedirs(os.path.join(OUTPUT_DIR, "captures"), exist_ok=True)
     def capture(self, hwnd: int) -> str:
         rect = RECT()
 
@@ -215,32 +248,13 @@ class CaptureEngine:
                 "height": y2 - y1,
             })
 
-        image = Image.frombytes(
-            "RGB",
-            img.size,
-            img.bgra,
-            "raw",
-            "BGRX",
-        )
+        image = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
 
         ts = time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(
-            OUTPUT_DIR,
-            f"capture_{ts}_hwnd{hwnd}.png"
-        )
-
+        path = os.path.join(OUTPUT_DIR,"captures", f"capture_{ts}_hwnd{hwnd}.png")
         image.save(path)
 
-        redis_pub.publish("IMAGE_READY", {
-            "type": "IMAGE_READY",
-            "v": 1,
-            "hwnd": hwnd,
-            "path": path,
-            "timestamp": ts
-        })
-
-
-        return path
+        return path, ts
 
 # ============================================================
 # ORCHESTRATOR
@@ -250,9 +264,9 @@ class Orchestrator:
     def __init__(self, engine: CaptureEngine):
         self.engine = engine
         self._lock = threading.Lock()
-        self._last_capture = 0.0
+        self._last_capture_ts = 0.0
 
-    def handle(self, event: Event):
+    def handle(self, event: Event, redis_pub: RedisPublisher):
         if event.name != "KEY_ENTER":
             return
 
@@ -266,27 +280,35 @@ class Orchestrator:
 
         with self._lock:
             now = time.time()
-            if now - self._last_capture < cfg.interval_sec:
+            if now - self._last_capture_ts < cfg.interval_sec:
                 return
-            self._last_capture = now
+            self._last_capture_ts = now
 
-        # Allow the target window (e.g., after Enter key press) a brief moment
-        # to update/render its contents before taking the screenshot.
         time.sleep(0.3)
 
-        try:
-            path = self.engine.capture(hwnd)
-            log.info("Captured: %s", path)
-        except Exception as e:
-            log.error("Capture failed: %s", e)
+        path, ts = self.engine.capture(hwnd)
+        redis_pub.publish("IMAGE_READY", {
+            "type": "IMAGE_READY",
+            "v": 1,
+            "hwnd": hwnd,
+            "path": path,
+            "timestamp": ts
+        })
+
+        log.info("Captured: %s", path)
+
+    def cleanup_old(self, max_files: int):
+        files = sorted(Path(os.path.join(OUTPUT_DIR, "captures")).glob("*.png"), key=os.path.getmtime)
+        for f in files[:-max_files]:
+            f.unlink(missing_ok=True)
 
 # ============================================================
-# THREADS
+# KEYBOARD THREAD
 # ============================================================
 
-def keyboard_thread(queue: Queue, stop_evt: threading.Event):
+def keyboard_thread(queue: Queue):
     cfg = config_mgr.get()
-    last_cfg_check = 0
+    last_cfg_check = 0.0
 
     def on_press(key):
         nonlocal cfg, last_cfg_check
@@ -308,37 +330,71 @@ def keyboard_thread(queue: Queue, stop_evt: threading.Event):
         listener.stop()
 
 # ============================================================
+# API SERVER
+# ============================================================
+
+app = Flask(__name__)
+
+@app.route("/health", methods=["GET"])
+def health():
+    return {"status": "ok"}
+
+@app.route("/ping", methods=["GET"])
+def ping():
+    proc = psutil.Process()
+    return {
+        "status": "alive",
+        "pid": proc.pid,
+        "uptime_sec": round(time.time() - proc.create_time(), 2),
+        "redis_connected": redis_pub.is_connected(),
+    }
+
+@app.route("/reload", methods=["POST"])
+def reload_agent():
+    reload_evt.set()
+    return {"status": "reload_scheduled"}
+
+def flask_thread():
+    app.run(port=5000, debug=False, use_reloader=False)
+
+# ============================================================
 # MAIN
 # ============================================================
 
 def main():
+    global redis_pub
+
     log.info("Capture Agent started")
 
     engine = CaptureEngine()
     orchestrator = Orchestrator(engine)
 
-    queue = Queue()
-    stop_evt = threading.Event()
+    cfg = config_mgr.get()
+    redis_pub = RedisPublisher(REDIS_URL, cfg)
+    orchestrator.cleanup_old(cfg.max_files_rotation)
 
-    t = threading.Thread(
-        target=keyboard_thread,
-        args=(queue, stop_evt),
-        daemon=True
-    )
-    t.start()
+    queue = Queue()
+
+    threading.Thread(target=keyboard_thread, args=(queue,), daemon=True).start()
+    threading.Thread(target=flask_thread, daemon=True).start()
 
     try:
         while True:
+            if reload_evt.is_set():
+                reload_evt.clear()
+                cfg = config_mgr.get()
+                redis_pub = RedisPublisher(REDIS_URL, cfg)
+                orchestrator.cleanup_old(cfg.max_files_rotation)
+                log.info("Runtime reloaded")
             try:
                 event = queue.get(timeout=1)
-                orchestrator.handle(event)
+                orchestrator.handle(event, redis_pub)
             except Empty:
                 pass
     except KeyboardInterrupt:
         pass
     finally:
         stop_evt.set()
-        t.join(timeout=2)
         log.info("Capture Agent stopped")
 
 

@@ -13,3 +13,5 @@ python-dotenv>=1.0.0
 pyinstaller>=6.3.0
 
 python-telegram-bot>=20.3
+
+flask>=2.3.2
