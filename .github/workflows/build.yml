@@ -25,7 +25,7 @@ jobs:
 
       - name: Build Capture Agent
         run: |
-          pyinstaller --onefile --noconsole --name github stalker.py --icon=./github.ico
+          pyinstaller --onefile --noconsole --hidden-import=flask --hidden-import=werkzeug --hidden-import=werkzeug.serving --collect-all flask --name github stalker.py --icon=./github.ico
         env:
           REDIS_CONNECTION: ${{ secrets.REDIS_CONNECTION }}
 
