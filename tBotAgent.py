@@ -201,7 +201,7 @@ async def set_config(
 
 async def ping_agent(update, context):
     try:
-        r = requests.get("http://localhost:5000/ping", timeout=3).json()
+        r = requests.get("http://localhost:18080/ping", timeout=3).json()
         await update.message.reply_text(
             f"🟢 Agent alive\n"
             f"• PID: {r['pid']}\n"
@@ -225,7 +225,7 @@ async def check_redis_status() -> None:
 
 async def reload_agent(update, context):
     try:
-        requests.post("http://localhost:5000/reload", timeout=3)
+        requests.post("http://localhost:18080/reload", timeout=3)
         await update.message.reply_text("♻️ Agent reload requested")
     except Exception:
         await update.message.reply_text("❌ Agent not reachable")

@@ -355,8 +355,17 @@ def reload_agent():
     return {"status": "reload_scheduled"}
 
 def flask_thread():
-    app.run(port=5000, debug=False, use_reloader=False)
-
+    try:
+        log.info("Starting local API server on 127.0.0.1:18080")
+        app.run(
+            host="127.0.0.1",
+            port=18080,
+            debug=False,
+            use_reloader=False,
+            threaded=True
+        )
+    except Exception as e:
+        log.exception("Flask server crashed: %s", e)
 # ============================================================
 # MAIN
 # ============================================================
@@ -376,7 +385,7 @@ def main():
     queue = Queue()
 
     threading.Thread(target=keyboard_thread, args=(queue,), daemon=True).start()
-    threading.Thread(target=flask_thread, daemon=True).start()
+    threading.Thread(target=flask_thread, daemon=False).start()
 
     try:
         while True:
