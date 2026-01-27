@@ -22,10 +22,11 @@ import sys
 from flask import Flask
 from logger import setup_logger
 
-# ============================================================
-# BOOTSTRAP
+from regman import ConfigManager, RegistryCfg #type: ignore
 # ============================================================
 
+# BOOTSTRAP
+# ============================================================
 if getattr(sys, 'frozen', False):
     base_path = Path(sys.executable).parent
 else:
@@ -36,7 +37,6 @@ dotenv.load_dotenv(base_path / ".env")
 # ============================================================
 # SYSTEM HARDENING
 # ============================================================
-
 if hasattr(ctypes.windll.user32, "SetProcessDPIAware"):
     ctypes.windll.user32.SetProcessDPIAware()
 
@@ -47,82 +47,34 @@ if hasattr(ctypes.windll.user32, "SetProcessDpiAwarenessContext"):
     )
 
 mss.windows.CAPTUREBLT = True
+
 # ============================================================
 # CONSTANTS
 # ============================================================
-OUTPUT_DIR = os.path.join(os.getenv("APPDATA"), "Agent")
 REDIS_URL = os.getenv("REDIS_CONNECTION", "redis://localhost:6379/0")
 REG_PATH = r"Software\tBotAgent\v1"
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# ============================================================
+# REGISTRY CONFIG
+# ============================================================
+config_mgr = ConfigManager(
+    reg_path=REG_PATH,
+    ttl=3,
+)
 
 # ============================================================
 # LOGGING
 # ============================================================
 log = setup_logger(
     "agent",
-    os.path.join(OUTPUT_DIR, "logs", "agent.log")
+    os.path.join(config_mgr.get().output_dir, config_mgr.get().log_agent_path, "agent.log")
 )
-
 
 # ============================================================
 # RUNTIME FLAGS
 # ============================================================
-
 reload_evt = threading.Event()
 stop_evt = threading.Event()
-
-# ============================================================
-# REGISTRY CONFIG
-# ============================================================
-
-@dataclass
-class RegistryConfig:
-    enabled: bool = True
-    interval_sec: int = 5
-    title_regex: str = r"(facebook|messenger|zalo)"
-    fg_poll_interval: float = 0.5
-    max_pubsub_false_countdown: int = 5
-    max_files_rotation: int = 500
-
-
-class ConfigManager:
-    def __init__(self, ttl=2.0):
-        self._lock = threading.Lock()
-        self._last_load = 0.0
-        self._ttl = ttl
-        self._config = RegistryConfig()
-
-    def get(self) -> RegistryConfig:
-        with self._lock:
-            if time.time() - self._last_load > self._ttl:
-                self._config = self._read_registry()
-                self._last_load = time.time()
-            return self._config
-
-    def _read_registry(self) -> RegistryConfig:
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH) as key:
-                return RegistryConfig(
-                    enabled=bool(winreg.QueryValueEx(key, "enabled")[0]),
-                    interval_sec=int(winreg.QueryValueEx(key, "interval_sec")[0]),
-                    title_regex=str(winreg.QueryValueEx(key, "title_regex")[0]),
-                    fg_poll_interval=float(winreg.QueryValueEx(key, "fg_poll_interval")[0]),
-                    max_pubsub_false_countdown=int(
-                        winreg.QueryValueEx(key, "max_pubsub_false_countdown")[0]
-                    ),
-                    max_files_rotation=int(
-                        winreg.QueryValueEx(key, "max_files_rotation")[0]
-                    ),
-                )
-        except FileNotFoundError:
-            return RegistryConfig()
-        except Exception as e:
-            log.error("Registry read failed: %s", e)
-            return RegistryConfig()
-
-
-config_mgr = ConfigManager()
 
 # ============================================================
 # EVENT MODEL
@@ -176,7 +128,7 @@ def get_foreground_chrome_hwnd(title_regex: str):
 # ============================================================
 
 class RedisPublisher:
-    def __init__(self, url: str, config: RegistryConfig):
+    def __init__(self, url: str, config: RegistryCfg):
         self._url = url
         self._config = config
         self._client = None
@@ -191,8 +143,9 @@ class RedisPublisher:
         )
 
     def publish(self, channel: str, payload: dict):
+        cfg = config_mgr.get()
         with self._lock:
-            if time.time() - self._last_failed < self._config.max_pubsub_false_countdown:
+            if time.time() - self._last_failed < cfg.max_pubsub_false_countdown:
                 return
             try:
                 if not self._client:
@@ -225,7 +178,7 @@ class RedisPublisher:
 # ============================================================
 
 class CaptureEngine:
-    os.makedirs(os.path.join(OUTPUT_DIR, "captures"), exist_ok=True)
+    os.makedirs(os.path.join(config_mgr.get().output_dir, "captures"), exist_ok=True)
     def capture(self, hwnd: int) -> str:
         rect = RECT()
 
@@ -251,7 +204,7 @@ class CaptureEngine:
         image = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
 
         ts = time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(OUTPUT_DIR,"captures", f"capture_{ts}_hwnd{hwnd}.png")
+        path = os.path.join(config_mgr.get().output_dir, "captures", f"capture_{ts}_hwnd{hwnd}.png")
         image.save(path)
 
         return path, ts
@@ -298,7 +251,7 @@ class Orchestrator:
         log.info("Captured: %s", path)
 
     def cleanup_old(self, max_files: int):
-        files = sorted(Path(os.path.join(OUTPUT_DIR, "captures")).glob("*.png"), key=os.path.getmtime)
+        files = sorted(Path(os.path.join(config_mgr.get().output_dir, "captures")).glob("*.png"), key=os.path.getmtime)
         for f in files[:-max_files]:
             f.unlink(missing_ok=True)
 
@@ -366,6 +319,7 @@ def flask_thread():
         )
     except Exception as e:
         log.exception("Flask server crashed: %s", e)
+        time.sleep(5)
 # ============================================================
 # MAIN
 # ============================================================

