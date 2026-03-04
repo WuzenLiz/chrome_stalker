@@ -36,13 +36,15 @@ This repository is intended as:
 
 ✅ Event-driven architecture
 
-✅ Redis pub/sub integration
+✅ Redis Streams integration (at-least-once delivery)
 
 ✅ Runtime configuration via Windows Registry
 
 ✅ Thread-safe orchestration
 
 ✅ Designed for EXE packaging (PyInstaller)
+
+✅ Windows Services via NSSM (auto-restart, log redirection)
 
 ## Architecture
 The agent consists of the following components:
@@ -67,6 +69,7 @@ The agent consists of the following components:
                                      v
                             +------------------+
                             | Redis Publisher  |
+                            | (Streams / xadd) |
                             +------------------+
 ```
 
@@ -96,10 +99,15 @@ HKEY_CURRENT_USER
 |---|----|-----------|-------|
 |enabled|DWORD|Enable / disable capture|1|
 |interval_sec|DWORD|Minimum seconds between captures|5|
-|title_regex|STRING|Regex applied to window title|facebook|messenger|zalo|
+|title_regex|STRING|Regex applied to window title|`facebook\|messenger\|zalo`|
 |fg_poll_interval|DWORD|Foreground polling interval (sec)|1|
+|stream_name|STRING|Redis Stream name|IMAGE_STREAM|
+|stream_consumer_group|STRING|Redis consumer group|tbot_group|
+|stream_maxlen|DWORD|Max entries kept in stream|1000|
+|circuit_breaker_threshold|DWORD|Consecutive Telegram failures before pause|5|
+|circuit_breaker_sleep_sec|STRING|Pause duration (sec) when circuit opens|60.0|
 
-Registry config can be updated without restarting the process (future extension).
+Registry config is re-read every few seconds without restarting the process.
 
 ## Trigger Logic
 
@@ -124,19 +132,58 @@ This avoids:
 
 Captured images are saved to:
 ```shell
-%APPDATA%\captures
+%APPDATA%\chrome_stalker\captures
 ```
 
-And published to Redis:
+And published to a Redis Stream:
 ```json
-Channel: IMAGE_READY
-Payload:
+Stream: IMAGE_STREAM
+Message fields:
 {
-  "hwnd": 123456,
+  "type": "IMAGE_READY",
+  "v": "1",
+  "hwnd": "123456",
   "path": "C:\\Users\\...\\capture_20260115-185500_hwnd123456.png",
   "timestamp": "20260115-185500"
 }
 ```
+
+## Process Management (NSSM)
+
+Both agents run as Windows Services managed by
+[NSSM](https://nssm.cc) (Non-Sucking Service Manager).
+
+### First-time setup
+
+1. Download `nssm.exe` from <https://nssm.cc/download> and either:
+   - Place it in this directory, **or**
+   - Add it to your `PATH`
+
+2. Open an **Administrator** command prompt and run:
+
+```bat
+nssm_install.bat
+```
+
+This installs `ChromeStalker` and `ChromeTBot` as auto-start Windows Services
+with log files in the `logs\` directory.
+
+### Daily operations
+
+| Action | Command (Admin prompt) |
+|--------|------------------------|
+| Start both services | `start.bat` |
+| Stop both services | `stop.bat` |
+| Check service status | `nssm status ChromeStalker` |
+| View logs | `logs\stalker.log`, `logs\tbot.log` |
+| Remove services | `nssm_uninstall.bat` |
+
+### Service names
+
+| Service | Script |
+|---------|--------|
+| `ChromeStalker` | `stalker.py` |
+| `ChromeTBot` | `tBotAgent.py` |
 
 ## Build (Local)
 
@@ -152,15 +199,20 @@ Requirements
 
 - Chrome installed
 
-Build EXE
+- [NSSM](https://nssm.cc) (for service management)
+
+Install dependencies:
 ``` powershell
 pip install -r requirements.txt
+```
 
+Build EXE (optional):
+``` powershell
 pyinstaller ^
   --onefile ^
   --noconsole ^
   --name chrome-capture-agent ^
-  main.py
+  stalker.py
 ```
 
 ## Non-Goals

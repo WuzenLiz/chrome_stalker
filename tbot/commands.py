@@ -162,14 +162,16 @@ async def redeploy(update, context) -> None:
 
         def _restart():
             time.sleep(1.0)
-            ctl = subprocess.run(
-                ["supervisorctl", "-c", str(base_path / "supervisor.conf"), "restart", "all"],
-                capture_output=True, text=True, cwd=base_path,
-            )
-            if ctl.returncode != 0:
-                log.error("supervisorctl restart failed: %s", (ctl.stdout + ctl.stderr).strip())
-            else:
-                log.info("supervisorctl restart all: OK")
+            # Restart both NSSM-managed services
+            for svc in ("ChromeStalker", "ChromeTBot"):
+                ctl = subprocess.run(
+                    ["nssm", "restart", svc],
+                    capture_output=True, text=True,
+                )
+                if ctl.returncode != 0:
+                    log.error("nssm restart %s failed: %s", svc, (ctl.stdout + ctl.stderr).strip())
+                else:
+                    log.info("nssm restart %s: OK", svc)
 
         threading.Thread(target=_restart, daemon=True).start()
     except subprocess.TimeoutExpired:

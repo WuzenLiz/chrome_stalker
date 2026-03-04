@@ -10,9 +10,6 @@ mss>=9.0.1
 pynput>=1.7.6
 python-dotenv>=1.0.0
 
-# ===== Process management =====
-supervisor>=4.2.5
-
 python-telegram-bot>=20.3
 
 flask>=2.3.2
