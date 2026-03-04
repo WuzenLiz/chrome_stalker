@@ -197,6 +197,14 @@ async def reload_agent(update, context):
     except Exception:
         await update.message.reply_text("❌ Agent not reachable")
 
+async def self_restart(update, context):
+    await update.message.reply_text("♻️ Bot restarting...")
+    def _restart():
+        time.sleep(0.5)
+        log.info("Self-restarting bot...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_restart, daemon=True).start()
+
 async def last_log_agent(update, context):
     n = int(context.args[0]) if context.args else 20
     log_file = os.path.join(configmgr.get().output_dir, configmgr.get().log_agent_path, "agent.log")
@@ -256,6 +264,11 @@ def app_init(token, config_mgr: ConfigManager):
     app.add_handler(CommandHandler(
         "redis_status",
         redis_status
+    ))
+
+    app.add_handler(CommandHandler(
+        "self_restart",
+        self_restart
     ))
 
     return app

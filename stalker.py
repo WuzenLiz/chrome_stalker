@@ -309,6 +309,15 @@ def reload_agent():
     reload_evt.set()
     return {"status": "reload_scheduled"}
 
+@app.route("/self_restart", methods=["POST"])
+def self_restart():
+    def _restart():
+        time.sleep(0.5)
+        log.info("Self-restarting agent...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_restart, daemon=True).start()
+    return {"status": "restarting"}
+
 def flask_thread():
     try:
         log.info("Starting local API server on 127.0.0.1:18080")
