@@ -25,6 +25,31 @@ class RECT(ctypes.Structure):
 _regex_cache: dict = {}
 
 
+def is_chrome_hwnd(hwnd: int, title_regex: str) -> bool:
+    """Return True if *hwnd* is a Chrome window whose title matches title_regex.
+
+    Unlike get_foreground_chrome_hwnd, this validates an already-known hwnd
+    without calling GetForegroundWindow, so it can be safely called from the
+    main thread after the low-level keyboard hook has queued the event.
+    """
+    try:
+        if win32gui.GetClassName(hwnd) != "Chrome_WidgetWin_1":
+            return False
+    except Exception:
+        return False
+
+    title = win32gui.GetWindowText(hwnd).strip()
+    if not title:
+        return False
+
+    pat = _regex_cache.get(title_regex)
+    if not pat:
+        pat = re.compile(title_regex, re.I)
+        _regex_cache[title_regex] = pat
+
+    return bool(pat.search(title))
+
+
 def get_foreground_chrome_hwnd(title_regex: str):
     hwnd = win32gui.GetForegroundWindow()
     if not hwnd:

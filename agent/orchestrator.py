@@ -8,8 +8,10 @@ from queue import Queue
 
 from pynput import keyboard
 
+import win32gui
+
 from regman import ConfigManager  # type: ignore
-from agent.capture import CaptureEngine, get_foreground_chrome_hwnd
+from agent.capture import CaptureEngine, get_foreground_chrome_hwnd, is_chrome_hwnd
 from agent.redis_pub import RedisPublisher
 from agent import metrics
 
@@ -50,6 +52,9 @@ class Orchestrator:
         if not hwnd:
             return
 
+        if not is_chrome_hwnd(hwnd, cfg.title_regex):
+            return
+
         with self._lock:
             now = time.time()
             if now - self._last_capture_ts < cfg.interval_sec:
@@ -88,21 +93,13 @@ def keyboard_thread(
     config_mgr: ConfigManager,
     stop_evt: threading.Event,
 ) -> None:
-    cfg = config_mgr.get()
-    last_cfg_check = 0.0
-
     def on_press(key):
-        nonlocal cfg, last_cfg_check
-        log.debug("Key pressed: %s", key)
+        # Keep the hook callback minimal: Windows removes WH_KEYBOARD_LL hooks
+        # that don't return within ~200 ms (LowLevelHooksTimeout).
+        # Only call GetForegroundWindow (instant), then hand off to the main thread.
         if key != keyboard.Key.enter:
             return
-
-        now = time.time()
-        if now - last_cfg_check > 1.0:
-            cfg = config_mgr.get()
-            last_cfg_check = now
-
-        hwnd = get_foreground_chrome_hwnd(cfg.title_regex)
+        hwnd = win32gui.GetForegroundWindow()
         if hwnd:
             queue.put(Event("KEY_ENTER", {"hwnd": hwnd}))
 
