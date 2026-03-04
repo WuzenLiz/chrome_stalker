@@ -19,3 +19,12 @@ class RegistryCfg:
     delete_minutes: int = 5
     max_delete_minutes: int = 1440
     log_tbot_path: str = "logs/tbot"
+
+    # Redis Streams
+    stream_name: str = "IMAGE_STREAM"
+    stream_consumer_group: str = "tbot_group"
+    stream_maxlen: int = 1000
+
+    # Circuit breaker (Telegram sender)
+    circuit_breaker_threshold: int = 5
+    circuit_breaker_sleep_sec: float = 60.0
