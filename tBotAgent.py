@@ -27,6 +27,7 @@ TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 REG_PATH = r"Software\tBotAgent\v1"
 _last_send = 0.0
 _send_lock = threading.Lock()
+reconnect_redis_evt = threading.Event()
 
 configmgr = ConfigManager(reg_path=REG_PATH, ttl=2.0)
 
@@ -216,11 +217,17 @@ async def manual_shot(update, context):
         await update.message.reply_text(f"❌ Agent not reachable: {e}")
 
 async def reconnect_redis(update, context):
+    reconnect_redis_evt.set()
+    agent_ok = False
     try:
         requests.post("http://localhost:18080/reconnect_redis", timeout=3)
-        await update.message.reply_text("🔌 Redis reconnect triggered")
-    except Exception:
-        await update.message.reply_text("❌ Agent not reachable")
+        agent_ok = True
+    except Exception as e:
+        log.warning("Could not reach agent for Redis reconnect: %s", e)
+    if agent_ok:
+        await update.message.reply_text("🔌 Redis reconnect triggered (bot + agent)")
+    else:
+        await update.message.reply_text("🔌 Redis reconnect triggered (bot only — agent unreachable)")
 
 async def self_restart(update, context):
     await update.message.reply_text("♻️ Bot restarting...")
@@ -320,6 +327,24 @@ def redis_worker(stop_evt, config_mgr: ConfigManager):
     pubsub = None
     
     while not stop_evt.is_set():
+        # Manual reconnect requested from /reconnect_redis command
+        if reconnect_redis_evt.is_set():
+            reconnect_redis_evt.clear()
+            log.info("Redis reconnect requested")
+            if pubsub:
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
+                pubsub = None
+            if r:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+                r = None
+            retry_delay = 1.0
+
         try:
             # Create Redis connection with keepalive settings
             if r is None:
