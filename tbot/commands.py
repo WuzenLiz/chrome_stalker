@@ -164,12 +164,12 @@ async def redeploy(update, context) -> None:
             time.sleep(1.0)
             # Restart both NSSM-managed services using net stop/start
             # (avoids the "Unexpected status SERVICE_STOPPED" quirk of nssm restart)
-            for svc in ("ChromeStalker", "ChromeTBot"):
+            for svc in ("ChromeStalker"):
                 ctl = subprocess.run(["net", "stop", svc], capture_output=True, text=True)
                 if ctl.returncode != 0:
                     log.warning("net stop %s failed (may already be stopped): %s",
                                 svc, (ctl.stdout + ctl.stderr).strip())
-            for svc in ("ChromeStalker", "ChromeTBot"):
+            for svc in ("ChromeStalker"):
                 ctl = subprocess.run(
                     ["net", "start", svc],
                     capture_output=True, text=True,

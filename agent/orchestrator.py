@@ -93,6 +93,7 @@ def keyboard_thread(
 
     def on_press(key):
         nonlocal cfg, last_cfg_check
+        log.debug("Key pressed: %s", key)
         if key != keyboard.Key.enter:
             return
 
