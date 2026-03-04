@@ -157,6 +157,16 @@ class RedisPublisher:
                 self._client = None
                 self._last_failed = time.time()
 
+    def reset_connection(self):
+        with self._lock:
+            if self._client:
+                try:
+                    self._client.close()
+                except Exception:
+                    pass
+            self._client = None
+            self._last_failed = 0.0
+
     def is_connected(self) -> bool:
         with self._lock:
             try:
@@ -180,6 +190,16 @@ class RedisPublisher:
 class CaptureEngine:
     def __init__(self):
         os.makedirs(os.path.join(config_mgr.get().output_dir, "captures"), exist_ok=True)
+
+    def capture_primary(self) -> tuple:
+        with mss.mss() as sct:
+            monitor = sct.monitors[1]
+            img = sct.grab(monitor)
+        image = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(config_mgr.get().output_dir, "captures", f"capture_{ts}_screen.png")
+        image.save(path)
+        return path, ts
 
     def capture(self, hwnd: int) -> str:
         rect = RECT()
@@ -318,6 +338,33 @@ def self_restart():
     threading.Thread(target=_restart, daemon=True).start()
     return {"status": "restarting"}
 
+@app.route("/manual_shot", methods=["POST"])
+def manual_shot():
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        try:
+            path, ts = engine.capture(hwnd) if hwnd else engine.capture_primary()
+        except Exception:
+            path, ts = engine.capture_primary()
+        redis_pub.publish("IMAGE_READY", {
+            "type": "IMAGE_READY",
+            "v": 1,
+            "hwnd": hwnd or 0,
+            "path": path,
+            "timestamp": ts,
+        })
+        log.info("Manual shot: %s", path)
+        return {"status": "ok", "path": path}
+    except Exception as e:
+        log.error("Manual shot failed: %s", e)
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/reconnect_redis", methods=["POST"])
+def reconnect_redis():
+    redis_pub.reset_connection()
+    log.info("Redis connection reset")
+    return {"status": "ok"}
+
 def flask_thread():
     try:
         log.info("Starting local API server on 127.0.0.1:18080")
@@ -336,7 +383,7 @@ def flask_thread():
 # ============================================================
 
 def main():
-    global redis_pub
+    global redis_pub, engine
 
     log.info("Capture Agent started")
 

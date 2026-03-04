@@ -197,6 +197,31 @@ async def reload_agent(update, context):
     except Exception:
         await update.message.reply_text("❌ Agent not reachable")
 
+async def manual_shot(update, context):
+    try:
+        r = requests.post("http://localhost:18080/manual_shot", timeout=10).json()
+        if r.get("status") == "ok":
+            path = r["path"]
+            captures_dir = os.path.realpath(
+                os.path.join(configmgr.get().output_dir, "captures")
+            )
+            if not os.path.realpath(path).startswith(captures_dir + os.sep):
+                await update.message.reply_text("❌ Invalid capture path")
+                return
+            with open(path, "rb") as f:
+                await update.message.reply_photo(f)
+        else:
+            await update.message.reply_text(f"❌ {r.get('message', 'Capture failed')}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Agent not reachable: {e}")
+
+async def reconnect_redis(update, context):
+    try:
+        requests.post("http://localhost:18080/reconnect_redis", timeout=3)
+        await update.message.reply_text("🔌 Redis reconnect triggered")
+    except Exception:
+        await update.message.reply_text("❌ Agent not reachable")
+
 async def self_restart(update, context):
     await update.message.reply_text("♻️ Bot restarting...")
     def _restart():
@@ -269,6 +294,16 @@ def app_init(token, config_mgr: ConfigManager):
     app.add_handler(CommandHandler(
         "self_restart",
         self_restart
+    ))
+
+    app.add_handler(CommandHandler(
+        "manual_shot",
+        manual_shot
+    ))
+
+    app.add_handler(CommandHandler(
+        "reconnect_redis",
+        reconnect_redis
     ))
 
     return app
