@@ -7,7 +7,7 @@ class RegistryCfg:
     interval_sec: int = 5
     title_regex: str = r"(facebook|messenger|zalo)"
     fg_poll_interval: float = 0.5
-    output_dir: str = os.getenv("APPDATA") or "C:\\Users\\Public\\AppData"
+    output_dir: str = os.path.join(os.getenv("APPDATA") or "C:\\Users\\Public\\AppData", "chrome_stalker")
 
     # agent-only
     max_pubsub_false_countdown: int = 5
