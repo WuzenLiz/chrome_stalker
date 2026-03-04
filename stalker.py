@@ -27,11 +27,7 @@ from regman import ConfigManager, RegistryCfg #type: ignore
 
 # BOOTSTRAP
 # ============================================================
-if getattr(sys, 'frozen', False):
-    base_path = Path(sys.executable).parent
-else:
-    base_path = Path(__file__).parent
-
+base_path = Path(__file__).parent
 dotenv.load_dotenv(base_path / ".env")
 
 # ============================================================

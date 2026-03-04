@@ -2,6 +2,7 @@ import os
 import json
 import redis
 import requests
+import subprocess
 import time
 import dotenv
 import sys
@@ -13,11 +14,7 @@ from telegram.ext import Application, CommandHandler
 from logger import setup_logger
 from regman import ConfigManager # type: ignore
 
-if getattr(sys, 'frozen', False):
-    base_path = Path(sys.executable).parent
-else:
-    base_path = Path(__file__).parent
-
+base_path = Path(__file__).parent
 dotenv.load_dotenv(base_path / ".env")
 
 
@@ -216,6 +213,40 @@ async def manual_shot(update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ Agent not reachable: {e}")
 
+async def redeploy(update, context):
+    await update.message.reply_text("🔄 Redeploying...")
+    try:
+        pull = subprocess.run(
+            ["git", "pull"],
+            capture_output=True, text=True, cwd=base_path, timeout=60
+        )
+        if pull.returncode != 0:
+            await update.message.reply_text(f"❌ git pull failed:\n{pull.stderr[:500]}")
+            return
+        pull_out = pull.stdout.strip() or "Already up to date."
+
+        # Reply before restart so the message is delivered even if tbot is restarted
+        await update.message.reply_text(
+            f"✅ Code updated: {pull_out}\n♻️ Restarting services in 1s..."
+        )
+
+        def _restart():
+            time.sleep(1.0)
+            ctl = subprocess.run(
+                ["supervisorctl", "-c", str(base_path / "supervisor.conf"), "restart", "all"],
+                capture_output=True, text=True, cwd=base_path
+            )
+            if ctl.returncode != 0:
+                log.error("supervisorctl restart failed: %s", (ctl.stdout + ctl.stderr).strip())
+            else:
+                log.info("supervisorctl restart all: OK")
+
+        threading.Thread(target=_restart, daemon=True).start()
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("❌ git pull timed out")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Redeploy failed: {e}")
+
 async def reconnect_redis(update, context):
     reconnect_redis_evt.set()
     agent_ok = False
@@ -306,6 +337,11 @@ def app_init(token, config_mgr: ConfigManager):
     app.add_handler(CommandHandler(
         "manual_shot",
         manual_shot
+    ))
+
+    app.add_handler(CommandHandler(
+        "redeploy",
+        redeploy
     ))
 
     app.add_handler(CommandHandler(
