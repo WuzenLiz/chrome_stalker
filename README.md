@@ -13,7 +13,7 @@ This project is a Windows-native capture agent that monitors:
 
 - User input events (keyboard Enter key)
 
-When conditions are met, the agent captures the Chrome window and publishes the result via Redis, allowing downstream consumers (e.g. Telegram bot, storage worker, analytics pipeline) to process the image asynchronously.
+When conditions are met, the agent captures the Chrome window and publishes the result via Redis Streams, allowing downstream consumers (e.g. Telegram bot, storage worker, analytics pipeline) to process the image asynchronously with reconnect-safe delivery.
 
 This repository is intended as:
 
@@ -36,7 +36,7 @@ This repository is intended as:
 
 ✅ Event-driven architecture
 
-✅ Redis pub/sub integration
+✅ Redis Streams + consumer group integration (with pub/sub compatibility publish)
 
 ✅ Runtime configuration via Windows Registry
 
@@ -97,7 +97,21 @@ HKEY_CURRENT_USER
 |enabled|DWORD|Enable / disable capture|1|
 |interval_sec|DWORD|Minimum seconds between captures|5|
 |title_regex|STRING|Regex applied to window title|facebook|messenger|zalo|
-|fg_poll_interval|DWORD|Foreground polling interval (sec)|1|
+|fg_poll_interval|DWORD|Foreground polling interval (sec)|1||send_interval_sec|FLOAT|Telegram send interval seconds|1.2|
+|delete_minutes|DWORD|Default cleanup minutes|5|
+|max_cleanup_minutes|DWORD|Max accepted cleanup minutes|60|
+|redis_stream_name|STRING|Stream name|image_ready_stream|
+|redis_consumer_group|STRING|Consumer group name|tbot_group|
+|redis_consumer_name_prefix|STRING|Consumer name prefix|tbot|
+|redis_stream_maxlen|DWORD|Approximate stream cap|10000|
+|redis_block_ms|DWORD|XREADGROUP block timeout (ms)|5000|
+|redis_claim_idle_ms|DWORD|Idle time for XAUTOCLAIM (ms)|60000|
+|redis_connect_timeout_sec|DWORD|Redis connect timeout|5|
+|redis_socket_timeout_sec|DWORD|Redis socket timeout|10|
+|redis_healthcheck_sec|DWORD|Redis health-check interval|30|
+|redis_retry_min_sec|FLOAT|Reconnect backoff minimum|1.0|
+|redis_retry_max_sec|FLOAT|Reconnect backoff maximum|60.0|
+|redis_dedup_ttl_sec|DWORD|Duplicate suppression TTL|300|
 
 Registry config can be updated without restarting the process (future extension).
 
@@ -186,3 +200,6 @@ The author is not responsible for misuse, policy violations, or unintended conse
 ## License
 
 MIT License
+
+
+

@@ -22,7 +22,7 @@ import sys
 from flask import Flask
 from logger import setup_logger
 
-from regman import ConfigManager, RegistryCfg #type: ignore
+from regman import ConfigManager #type: ignore
 # ============================================================
 
 # BOOTSTRAP
@@ -128,34 +128,80 @@ def get_foreground_chrome_hwnd(title_regex: str):
 # ============================================================
 
 class RedisPublisher:
-    def __init__(self, url: str, config: RegistryCfg):
+    def __init__(self, url: str):
         self._url = url
-        self._config = config
         self._client = None
         self._lock = threading.Lock()
-        self._last_failed = 0.0
+        self._next_retry_ts = 0.0
+        self._retry_delay = 0.0
+        self._connected = False
 
     def _connect(self):
+        cfg = config_mgr.get()
         self._client = redis.Redis.from_url(
             self._url,
             decode_responses=True,
-            socket_timeout=5
+            socket_keepalive=True,
+            health_check_interval=cfg.redis_healthcheck_sec,
+            socket_connect_timeout=cfg.redis_connect_timeout_sec,
+            socket_timeout=cfg.redis_socket_timeout_sec,
         )
 
-    def publish(self, channel: str, payload: dict):
+    def _set_retry(self):
         cfg = config_mgr.get()
+        if self._retry_delay <= 0:
+            self._retry_delay = cfg.redis_retry_min_sec
+        else:
+            self._retry_delay = min(self._retry_delay * 2, cfg.redis_retry_max_sec)
+        self._next_retry_ts = time.time() + self._retry_delay
+
+    def _reset_retry(self):
+        self._retry_delay = 0.0
+        self._next_retry_ts = 0.0
+
+    def _ensure_client(self) -> bool:
+        now = time.time()
+        if self._client:
+            return True
+        if now < self._next_retry_ts:
+            return False
+        try:
+            self._connect()
+            self._client.ping()
+            if not self._connected:
+                log.info("Redis producer connected")
+            self._connected = True
+            self._reset_retry()
+            return True
+        except Exception as e:
+            self._client = None
+            self._connected = False
+            self._set_retry()
+            log.warning("Redis producer connect failed: %s (retry in %.1fs)", e, self._retry_delay)
+            return False
+
+    def publish(self, channel: str, payload: dict):
         with self._lock:
-            if time.time() - self._last_failed < cfg.max_pubsub_false_countdown:
+            if not self._ensure_client():
                 return
+
+            cfg = config_mgr.get()
+            body = json.dumps(payload)
+            event_key = f"{payload.get('path', '')}|{payload.get('timestamp', '')}"
             try:
-                if not self._client:
-                    self._connect()
-                    log.info("Redis connected")
-                self._client.publish(channel, json.dumps(payload))
+                self._client.xadd(
+                    cfg.redis_stream_name,
+                    {"payload": body, "event_key": event_key},
+                    maxlen=cfg.redis_stream_maxlen,
+                    approximate=True,
+                )
+                self._client.publish(channel, body)
+                self._reset_retry()
             except Exception as e:
-                log.error("Redis publish failed: %s", e)
                 self._client = None
-                self._last_failed = time.time()
+                self._connected = False
+                self._set_retry()
+                log.error("Redis producer publish failed: %s (retry in %.1fs)", e, self._retry_delay)
 
     def is_connected(self) -> bool:
         with self._lock:
@@ -333,7 +379,7 @@ def main():
     orchestrator = Orchestrator(engine)
 
     cfg = config_mgr.get()
-    redis_pub = RedisPublisher(REDIS_URL, cfg)
+    redis_pub = RedisPublisher(REDIS_URL)
     orchestrator.cleanup_old(cfg.max_files_rotation)
 
     queue = Queue()
@@ -346,13 +392,14 @@ def main():
             if reload_evt.is_set():
                 reload_evt.clear()
                 cfg = config_mgr.get()
-                redis_pub = RedisPublisher(REDIS_URL, cfg)
+                redis_pub = RedisPublisher(REDIS_URL)
                 orchestrator.cleanup_old(cfg.max_files_rotation)
                 log.info("Runtime reloaded")
             try:
                 event = queue.get(timeout=1)
                 orchestrator.handle(event, redis_pub)
             except Empty:
+                log.debug("Idle...")
                 pass
     except KeyboardInterrupt:
         pass

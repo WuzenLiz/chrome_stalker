@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "start tbot",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tBotAgent.py",
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
