@@ -40,14 +40,19 @@ if %errorlevel% neq 0 (
 )
 
 :: ── Resolve Python ────────────────────────────────────────────────────────
+:: Prefer the project .venv; fall back to system python.
 :: Use plain python (not pythonw) so NSSM can capture stdout/stderr properly.
-for /f "delims=" %%i in ('where python 2^>nul') do (
-    if not defined PYTHON set "PYTHON=%%i"
-)
-if not defined PYTHON (
-    echo [ERROR] python not found in PATH.
-    pause
-    exit /b 1
+if exist "%BASE%.venv\Scripts\python.exe" (
+    set "PYTHON=%BASE%.venv\Scripts\python.exe"
+) else (
+    for /f "delims=" %%i in ('where python 2^>nul') do (
+        if not defined PYTHON set "PYTHON=%%i"
+    )
+    if not defined PYTHON (
+        echo [ERROR] python not found. Create a .venv with 'python -m venv .venv' or add python to PATH.
+        pause
+        exit /b 1
+    )
 )
 echo [INFO] Using Python: %PYTHON%
 
