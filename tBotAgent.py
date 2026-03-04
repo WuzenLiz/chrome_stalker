@@ -9,7 +9,7 @@ from logger import setup_logger
 from regman import ConfigManager  # type: ignore
 from tbot.commands import app_init
 from tbot.redis_worker import redis_worker
-from tbot.sender import sender_thread
+from tbot.sender import sender_thread, send_text
 from tbot.watchdog import watchdog_thread
 
 # ============================================================
@@ -75,6 +75,9 @@ if __name__ == "__main__":
         args=(stop_evt, t, ts),
         daemon=True,
     ).start()
+
+    if not send_text("✅ Services started successfully\n• ChromeStalker: started\n• ChromeTBot: started", API, TG_CHAT_ID):
+        log.warning("Startup notification could not be sent to Telegram")
 
     try:
         app.run_polling()

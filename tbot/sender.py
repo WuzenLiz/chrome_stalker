@@ -54,6 +54,21 @@ def get_fail_count() -> int:
         return _telegram_fail_count
 
 
+def send_text(text: str, api: str, chat_id: str) -> bool:
+    """Send a plain text message to Telegram. Returns True on success."""
+    try:
+        r = requests.post(
+            f"{api}/sendMessage",
+            data={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        log.error("Failed to send text message: %s", e)
+        return False
+
+
 def send_photo(path: str, config_mgr: ConfigManager, api: str, chat_id: str) -> bool:
     """Send a photo to Telegram. Returns True on success."""
     global _last_send
