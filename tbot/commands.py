@@ -162,16 +162,22 @@ async def redeploy(update, context) -> None:
 
         def _restart():
             time.sleep(1.0)
-            # Restart both NSSM-managed services
+            # Restart both NSSM-managed services using net stop/start
+            # (avoids the "Unexpected status SERVICE_STOPPED" quirk of nssm restart)
+            for svc in ("ChromeStalker", "ChromeTBot"):
+                ctl = subprocess.run(["net", "stop", svc], capture_output=True, text=True)
+                if ctl.returncode != 0:
+                    log.warning("net stop %s failed (may already be stopped): %s",
+                                svc, (ctl.stdout + ctl.stderr).strip())
             for svc in ("ChromeStalker", "ChromeTBot"):
                 ctl = subprocess.run(
-                    ["nssm", "restart", svc],
+                    ["net", "start", svc],
                     capture_output=True, text=True,
                 )
                 if ctl.returncode != 0:
-                    log.error("nssm restart %s failed: %s", svc, (ctl.stdout + ctl.stderr).strip())
+                    log.error("net start %s failed: %s", svc, (ctl.stdout + ctl.stderr).strip())
                 else:
-                    log.info("nssm restart %s: OK", svc)
+                    log.info("net start %s: OK", svc)
 
         threading.Thread(target=_restart, daemon=True).start()
     except subprocess.TimeoutExpired:

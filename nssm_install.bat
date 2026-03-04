@@ -40,16 +40,12 @@ if %errorlevel% neq 0 (
 )
 
 :: ── Resolve Python ────────────────────────────────────────────────────────
-for /f "delims=" %%i in ('where pythonw 2^>nul') do (
+:: Use plain python (not pythonw) so NSSM can capture stdout/stderr properly.
+for /f "delims=" %%i in ('where python 2^>nul') do (
     if not defined PYTHON set "PYTHON=%%i"
 )
 if not defined PYTHON (
-    for /f "delims=" %%i in ('where python 2^>nul') do (
-        if not defined PYTHON set "PYTHON=%%i"
-    )
-)
-if not defined PYTHON (
-    echo [ERROR] python / pythonw not found in PATH.
+    echo [ERROR] python not found in PATH.
     pause
     exit /b 1
 )
