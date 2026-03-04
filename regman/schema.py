@@ -17,4 +17,5 @@ class RegistryCfg:
     # tbot-only
     send_interval_sec: float = 1.2
     delete_minutes: int = 5
+    max_cleanup_minutes: int = 1440
     log_tbot_path: str = "logs/tbot"

@@ -46,7 +46,7 @@ def send_photo(path: str, configmgr: ConfigManager ) -> None:
     for _ in range(3):
         with _send_lock:
             now = time.time()
-            interval = configmgr._send_interval_sec
+            interval = configmgr.get().send_interval_sec
             delta = now - _last_send
             if delta < interval:
                 time.sleep(interval - delta)
@@ -75,8 +75,8 @@ async def cleanup_old_photos(
     config_mgr: ConfigManager,
 ) -> None:
     # -------- Parse arguments safely --------
-    minutes = config_mgr._delete_in_x_minutes
-    MAX_MINUTES = config_mgr._max_minutes
+    minutes = config_mgr.get().delete_minutes
+    MAX_MINUTES = config_mgr.get().max_cleanup_minutes
 
     if context.args:
         try:
@@ -157,7 +157,7 @@ async def set_config(
             value = value_str  # treat as string if not int/float/bool
 
     # Write to registry
-    config_mgr.write_reg(key, value)
+    config_mgr.write(key, value)
 
     await update.message.reply_text(
         f"✅ Set configuration\n"
@@ -378,7 +378,7 @@ def redis_worker(stop_evt, config_mgr: ConfigManager):
     log.info("Redis worker stopped")
 
 if __name__ == "__main__":
-    config = ConfigManager()
+    config = ConfigManager(reg_path=REG_PATH)
     app = app_init(TG_TOKEN, config)
     stop_evt = threading.Event()
     log.info("Telegram agent started, pid=%s", os.getpid())
