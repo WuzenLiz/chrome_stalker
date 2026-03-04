@@ -15,8 +15,13 @@ from tbot.watchdog import watchdog_thread
 # ============================================================
 # BOOTSTRAP
 # ============================================================
-base_path = Path(__file__).parent
-dotenv.load_dotenv(base_path / ".env")
+base_path = Path(__file__).resolve().parent
+env_path = base_path / ".env"
+
+if env_path.exists():
+    dotenv.load_dotenv(env_path)
+else:
+    print(f".env not found at {env_path}")
 
 REDIS_URL = os.getenv("REDIS_CONNECTION", "redis://localhost:6379/0")
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

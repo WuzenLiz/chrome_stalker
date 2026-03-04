@@ -20,8 +20,13 @@ import agent.api as api_module
 # ============================================================
 # BOOTSTRAP
 # ============================================================
-base_path = Path(__file__).parent
-dotenv.load_dotenv(base_path / ".env")
+base_path = Path(__file__).resolve().parent
+env_path = base_path / ".env"
+
+if env_path.exists():
+    dotenv.load_dotenv(env_path)
+else:
+    print(f".env not found at {env_path}")
 
 # ============================================================
 # SYSTEM HARDENING
