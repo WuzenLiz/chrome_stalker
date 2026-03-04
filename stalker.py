@@ -4,6 +4,7 @@ import threading
 import os
 import re
 import ctypes
+import subprocess
 from queue import Queue, Empty
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +72,20 @@ log = setup_logger(
 # ============================================================
 reload_evt = threading.Event()
 stop_evt = threading.Event()
+
+# ============================================================
+# METRICS
+# ============================================================
+_metrics = {
+    "total_captures": 0,
+    "total_publish_fail": 0,
+    "total_redis_reconnect": 0,
+}
+_metrics_lock = threading.Lock()
+
+def _inc(key: str):
+    with _metrics_lock:
+        _metrics[key] += 1
 
 # ============================================================
 # EVENT MODEL
@@ -142,16 +157,19 @@ class RedisPublisher:
         cfg = config_mgr.get()
         with self._lock:
             if time.time() - self._last_failed < cfg.max_pubsub_false_countdown:
+                log.warning("Skipping publish due to backoff window")
                 return
             try:
                 if not self._client:
                     self._connect()
                     log.info("Redis connected")
+                    _inc("total_redis_reconnect")
                 self._client.publish(channel, json.dumps(payload))
             except Exception as e:
                 log.error("Redis publish failed: %s", e)
                 self._client = None
                 self._last_failed = time.time()
+                _inc("total_publish_fail")
 
     def reset_connection(self):
         with self._lock:
@@ -258,6 +276,7 @@ class Orchestrator:
         time.sleep(0.3)
 
         path, ts = self.engine.capture(hwnd)
+        _inc("total_captures")
         redis_pub.publish("IMAGE_READY", {
             "type": "IMAGE_READY",
             "v": 1,
@@ -301,6 +320,18 @@ def keyboard_thread(queue: Queue):
         listener.stop()
 
 # ============================================================
+# WATCHDOG
+# ============================================================
+
+def watchdog_thread(kb_thread: threading.Thread):
+    while not stop_evt.is_set():
+        time.sleep(10)
+        if not kb_thread.is_alive():
+            log.warning("Keyboard thread died — restarting process")
+            stop_evt.set()
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+# ============================================================
 # API SERVER
 # ============================================================
 
@@ -308,7 +339,24 @@ app = Flask(__name__)
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok"}
+    with _metrics_lock:
+        return {
+            "status": "ok",
+            "total_captures": _metrics["total_captures"],
+            "total_publish_fail": _metrics["total_publish_fail"],
+            "total_redis_reconnect": _metrics["total_redis_reconnect"],
+        }
+
+@app.route("/version", methods=["GET"])
+def version():
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=base_path, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        commit = "unknown"
+    return {"commit": commit, "pid": os.getpid()}
 
 @app.route("/ping", methods=["GET"])
 def ping():
@@ -392,7 +440,9 @@ def main():
 
     queue = Queue()
 
-    threading.Thread(target=keyboard_thread, args=(queue,), daemon=True).start()
+    kb_t = threading.Thread(target=keyboard_thread, args=(queue,), daemon=True)
+    kb_t.start()
+    threading.Thread(target=watchdog_thread, args=(kb_t,), daemon=True).start()
     threading.Thread(target=flask_thread, daemon=False).start()
 
     try:
@@ -400,6 +450,7 @@ def main():
             if reload_evt.is_set():
                 reload_evt.clear()
                 cfg = config_mgr.get()
+                redis_pub.reset_connection()
                 redis_pub = RedisPublisher(REDIS_URL, cfg)
                 orchestrator.cleanup_old(cfg.max_files_rotation)
                 log.info("Runtime reloaded")

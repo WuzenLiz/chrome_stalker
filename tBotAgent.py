@@ -8,6 +8,7 @@ import dotenv
 import sys
 from pathlib import Path
 import threading
+from queue import Queue, Empty, Full
 from dataclasses import dataclass
 import winreg
 from telegram.ext import Application, CommandHandler
@@ -25,6 +26,9 @@ REG_PATH = r"Software\tBotAgent\v1"
 _last_send = 0.0
 _send_lock = threading.Lock()
 reconnect_redis_evt = threading.Event()
+send_queue: Queue = Queue(maxsize=200)
+_telegram_fail_count = 0
+_telegram_fail_lock = threading.Lock()
 
 configmgr = ConfigManager(reg_path=REG_PATH, ttl=2.0)
 
@@ -40,7 +44,7 @@ if not TG_TOKEN or not TG_CHAT_ID:
 API = f"https://api.telegram.org/bot{TG_TOKEN}"
 
 def send_photo(path: str, configmgr: ConfigManager ) -> None:
-    global _last_send
+    global _last_send, _telegram_fail_count
     for _ in range(3):
         with _send_lock:
             now = time.time()
@@ -66,6 +70,8 @@ def send_photo(path: str, configmgr: ConfigManager ) -> None:
             return
         except Exception as e:
             log.error("Failed to send photo %s: %s", path, e)
+            with _telegram_fail_lock:
+                _telegram_fail_count += 1
 
 async def cleanup_old_photos(
     update,
@@ -291,6 +297,16 @@ async def last_log_bot(update, context):
         await update.message.reply_text(f"❌ Error reading log: {e}")
 
 
+async def queue_status(update, context):
+    with _telegram_fail_lock:
+        fail_count = _telegram_fail_count
+    await update.message.reply_text(
+        f"📊 Queue status\n"
+        f"• Pending images: {send_queue.qsize()}\n"
+        f"• Telegram send failures: {fail_count}"
+    )
+
+
 def app_init(token, config_mgr: ConfigManager):
     app = Application.builder().token(token).build()
 
@@ -340,6 +356,11 @@ def app_init(token, config_mgr: ConfigManager):
     ))
 
     app.add_handler(CommandHandler(
+        "queue_status",
+        queue_status
+    ))
+
+    app.add_handler(CommandHandler(
         "redeploy",
         redeploy
     ))
@@ -350,6 +371,29 @@ def app_init(token, config_mgr: ConfigManager):
     ))
 
     return app
+
+def sender_thread(stop_evt, config_mgr: ConfigManager):
+    log.info("Starting sender thread")
+    while not stop_evt.is_set():
+        try:
+            path = send_queue.get(timeout=1.0)
+            send_photo(path, configmgr=config_mgr)
+            log.info("Sent image: %s", path)
+        except Empty:
+            pass
+        except Exception as e:
+            log.error("Sender thread error: %s", e)
+    log.info("Sender thread stopped")
+
+
+def watchdog_thread(stop_evt, *threads: threading.Thread):
+    while not stop_evt.is_set():
+        time.sleep(10)
+        for t in threads:
+            if not t.is_alive():
+                log.warning("Thread %s died — restarting process", t.name)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
 def redis_worker(stop_evt, config_mgr: ConfigManager):
     log.info("Starting Redis worker thread")
@@ -439,8 +483,10 @@ def redis_worker(stop_evt, config_mgr: ConfigManager):
                 if not path or not os.path.isfile(path):
                     continue
 
-                send_photo(path, configmgr=config_mgr)
-                log.info("Sent image: %s", path)
+                try:
+                    send_queue.put_nowait(path)
+                except Full:
+                    log.warning("Send queue full, dropping image: %s", path)
 
             except Exception as e:
                 log.error("Redis message handler error: %s", e)
@@ -500,6 +546,10 @@ if __name__ == "__main__":
         daemon=True
     )
     t.start()
+
+    ts = threading.Thread(target=sender_thread, args=(stop_evt, config), daemon=True, name="sender")
+    ts.start()
+    threading.Thread(target=watchdog_thread, args=(stop_evt, t, ts), daemon=True).start()
 
     try:
         app.run_polling()
