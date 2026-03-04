@@ -178,7 +178,9 @@ class RedisPublisher:
 # ============================================================
 
 class CaptureEngine:
-    os.makedirs(os.path.join(config_mgr.get().output_dir, "captures"), exist_ok=True)
+    def __init__(self):
+        os.makedirs(os.path.join(config_mgr.get().output_dir, "captures"), exist_ok=True)
+
     def capture(self, hwnd: int) -> str:
         rect = RECT()
 

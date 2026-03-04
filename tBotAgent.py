@@ -46,7 +46,7 @@ def send_photo(path: str, configmgr: ConfigManager ) -> None:
     for _ in range(3):
         with _send_lock:
             now = time.time()
-            interval = configmgr._send_interval_sec
+            interval = configmgr.get().send_interval_sec
             delta = now - _last_send
             if delta < interval:
                 time.sleep(interval - delta)
@@ -75,8 +75,8 @@ async def cleanup_old_photos(
     config_mgr: ConfigManager,
 ) -> None:
     # -------- Parse arguments safely --------
-    minutes = config_mgr._delete_in_x_minutes
-    MAX_MINUTES = config_mgr._max_minutes
+    minutes = config_mgr.get().delete_minutes
+    MAX_MINUTES = config_mgr.get().max_delete_minutes
 
     if context.args:
         try:
@@ -90,11 +90,7 @@ async def cleanup_old_photos(
 
     cutoff_ts = time.time() - (minutes * 60)
 
-    output_dir = os.path.join(
-        os.getenv("APPDATA", ""),
-        "Agent",
-        "captures"
-    )
+    output_dir = os.path.join(config_mgr.get().output_dir, "captures")
 
     if not os.path.isdir(output_dir):
         await update.message.reply_text("ℹ️ Capture directory does not exist.")
@@ -157,7 +153,7 @@ async def set_config(
             value = value_str  # treat as string if not int/float/bool
 
     # Write to registry
-    config_mgr.write_reg(key, value)
+    config_mgr.write(key, value)
 
     await update.message.reply_text(
         f"✅ Set configuration\n"
@@ -177,7 +173,13 @@ async def ping_agent(update, context):
         await update.message.reply_text("🔴 Agent offline")
 
 
-async def check_redis_status() -> None:
+async def redis_status(update, context):
+    connected = await check_redis_status()
+    status = "🟢 Connected" if connected else "🔴 Disconnected"
+    await update.message.reply_text(f"Redis status: {status}")
+
+
+async def check_redis_status() -> bool:
     r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     try:
         pong = r.ping()
@@ -253,7 +255,7 @@ def app_init(token, config_mgr: ConfigManager):
 
     app.add_handler(CommandHandler(
         "redis_status",
-        lambda u, c: check_redis_status()
+        redis_status
     ))
 
     return app
@@ -378,7 +380,7 @@ def redis_worker(stop_evt, config_mgr: ConfigManager):
     log.info("Redis worker stopped")
 
 if __name__ == "__main__":
-    config = ConfigManager()
+    config = ConfigManager(reg_path=REG_PATH)
     app = app_init(TG_TOKEN, config)
     stop_evt = threading.Event()
     log.info("Telegram agent started, pid=%s", os.getpid())
